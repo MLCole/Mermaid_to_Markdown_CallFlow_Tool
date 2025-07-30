@@ -41,11 +41,12 @@ def extract_nodes_edges(mermaid_code, filename=None):
         for pattern in node_patterns:
             match = re.search(pattern, stripped)
             if match:
-                nodes[match.group(1)] = match.group(2).replace('<br>', ' ').strip()
+                label_text = match.group(2).replace('<br>', ' ').strip()
+                nodes[match.group(1)] = label_text
                 matched = True
                 break
         if not matched and re.fullmatch(r'[0-9a-fA-F\-]{36}', stripped):
-            nodes[stripped] = ""
+            nodes[stripped] = stripped
             matched = True
         if not matched:
             unmatched_lines.append(stripped)
@@ -65,82 +66,43 @@ def parse_auto_attendant(nodes, edges):
         for i in incoming:
             md.append(f"- {i}")
 
-    # Detect branching conditions (e.g. |Yes|, |No|)
-    condition_branches = {}
-    for src, label, dst in edges:
-        if label:
-            condition_branches.setdefault(src, []).append((label, dst))
-
-    for src, branches in condition_branches.items():
-        src_label = nodes.get(src, src)
-        if len(branches) >= 2:
-            md.append(f"\n### 🔀 Conditional: {src_label}")
-            for label, dst in branches:
-                dst_label = nodes.get(dst, dst)
-                dst_type = categorize_target(dst_label)
-                md.append(f"- **{label}** → {dst_label} ({dst_type})")
-
-                if "Menu" in dst_label or "Press" in dst_label:
-                    nested_md = parse_menu_branch(dst, nodes, edges)
-                    nested_md = "\n".join(["    " + line if line.strip() else "" for line in nested_md.splitlines()])
-                    md.append(nested_md)
-
-    # Flat menu fallback
-    menus = [(k, v) for k, v in nodes.items() if "Menu" in v or "Press" in v]
-    if menus:
-        md.append("\n## 🔘 Main Menu Options")
-        for node_id, label in menus:
-            related = [(lbl, dst) for src, lbl, dst in edges if src == node_id and lbl]
-            keypress_map = []
-            for key, dest in related:
-                target_label = nodes.get(dest, dest)
-                target_type = categorize_target(target_label)
-                keypress_map.append((key, target_label, target_type, dest))
-            if not keypress_map:
-                md.append(f"- {label} (No keypress options found)")
-            else:
-                try:
-                    keypress_map.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
-                except:
-                    keypress_map.sort(key=lambda x: x[0])
-                for key, target_label, target_type, dest in keypress_map:
-                    md.append(f"- Press `{key}` → {target_label} ({target_type})")
-                    if "Menu" in target_label or "Press" in target_label:
-                        nested_md = parse_menu_branch(dest, nodes, edges)
-                        nested_md = "\n".join(["    " + line if line.strip() else "" for line in nested_md.splitlines()])
-                        md.append(nested_md)
-
-    # Voicemail Destinations
-    vms = [(k, v) for k, v in nodes.items() if "Voicemail" in v or "Greeting" in v]
-    if vms:
-        md.append("\n## 📩 Voicemail Destinations")
-        for k, v in vms:
-            md.append(f"- {v} ({k})")
-
-    return "\n".join(md)
-
-def parse_menu_branch(start_id, nodes, edges):
-    md = []
-    related = [(lbl, dst) for src, lbl, dst in edges if src == start_id and lbl]
+    # Map all menu transitions that contain a keypress number as the label (e.g. '|1|')
     keypress_map = []
-    for key, dest in related:
-        target_label = nodes.get(dest, dest)
-        target_type = categorize_target(target_label)
-        keypress_map.append((key, target_label, target_type, dest))
+    for src, label, dst in edges:
+        if label.strip().isdigit():
+            option = label.strip()
+            final_target = resolve_final_target(dst, edges, nodes)
+            target_label = nodes.get(final_target, final_target)
+            target_type = categorize_target(target_label)
+            keypress_map.append((option, target_label, target_type))
+
     if keypress_map:
+        md.append("\n## 🔘 Main Menu Options")
         try:
-            keypress_map.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+            keypress_map.sort(key=lambda x: int(x[0]))
         except:
             keypress_map.sort(key=lambda x: x[0])
-        for key, target_label, target_type, dest in keypress_map:
-            md.append(f"- Press `{key}` → {target_label} ({target_type})")
+        for key, label, ttype in keypress_map:
+            md.append(f"- Press `{key}` → {label} ({ttype})")
+
     return "\n".join(md)
+
+def resolve_final_target(start_id, edges, nodes, depth=0, visited=None):
+    if visited is None:
+        visited = set()
+    if start_id in visited or depth > 10:
+        return start_id
+    visited.add(start_id)
+    next_hops = [dst for src, lbl, dst in edges if src == start_id and not lbl.strip().isdigit()]
+    if not next_hops:
+        return start_id
+    return resolve_final_target(next_hops[0], edges, nodes, depth + 1, visited)
 
 def categorize_target(label):
     label = label.lower()
     if "voicemail" in label:
         return "📩 Voicemail"
-    elif "greeting" in label:
+    elif "greeting" in label or "transfer message" in label:
         return "📩 Greeting"
     elif "directory" in label:
         return "🔂 Directory"
@@ -205,7 +167,7 @@ def generate_markdown_from_html(html_file):
     try:
         mermaid_code = extract_mermaid_code(html_file)
         nodes, edges = extract_nodes_edges(mermaid_code, html_file)
-        if any("Menu" in v or "Press" in v for v in nodes.values()):
+        if any("Menu" in v or "Press" in v or re.search(r'{Key Press', v) for v in nodes.values()):
             markdown = parse_auto_attendant(nodes, edges)
         elif any("Call Queue" in v or "Agent" in v for v in nodes.values()):
             markdown = parse_call_queue(nodes, edges)
