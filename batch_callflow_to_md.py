@@ -17,19 +17,18 @@ def extract_mermaid_code(html_file):
 def extract_nodes_edges(mermaid_code, filename=None):
     nodes = {}
     edges = []
-    unmatched_lines = []
     lines = mermaid_code.splitlines()
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        matched = False
-        if any(op in stripped for op in ['-->', '-.->', '---']):
-            edge_match = re.match(r'(\S+)\s*--\|?(.*?)\|?-->\s*(\S+)', stripped)
-            if edge_match:
-                src, label, dst = edge_match.groups()
-                edges.append((src.strip(), label.strip(), dst.strip()))
-                matched = True
+        # Match edges
+        edge_match = re.match(r'(\S+)\s*--\|?(.*?)\|?-->\s*(\S+)', stripped)
+        if edge_match:
+            src, label, dst = edge_match.groups()
+            edges.append((src.strip(), label.strip(), dst.strip()))
+            continue
+        # Match nodes
         node_patterns = [
             r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',
             r'([a-zA-Z0-9_\-]+)\(\[(.*?)\]\)',
@@ -43,63 +42,32 @@ def extract_nodes_edges(mermaid_code, filename=None):
             if match:
                 label_text = match.group(2).replace('<br>', ' ').strip()
                 nodes[match.group(1)] = label_text
-                matched = True
                 break
-        if not matched and re.fullmatch(r'[0-9a-fA-F\-]{36}', stripped):
-            nodes[stripped] = stripped
-            matched = True
-        if not matched:
-            unmatched_lines.append(stripped)
-    if unmatched_lines:
-        file_label = f"[{filename}]" if filename else ""
-        logging.warning(f"{file_label} Unmatched Mermaid lines:")
-        for ul in unmatched_lines:
-            logging.warning(f"  >> {ul}")
     return nodes, edges
 
-def parse_auto_attendant(nodes, edges):
-    md = ["# 🤖 Auto Attendant Call Flow\n"]
+def build_graph(edges):
+    graph = {}
+    for src, _, dst in edges:
+        graph.setdefault(src, []).append(dst)
+    return graph
 
-    incoming = [v for v in nodes.values() if "Incoming Call" in v]
-    if incoming:
-        md.append("## 📞 Entry Points")
-        for i in incoming:
-            md.append(f"- {i}")
-
-    keypress_map = []
-    for src, label, dst in edges:
-        if label.strip().isdigit():
-            option = label.strip()
-            final_label = extract_final_label(dst, edges, nodes)
-            keypress_map.append((option, final_label, categorize_target(final_label)))
-
-    if keypress_map:
-        md.append("\n## 🔘 Main Menu Options")
-        try:
-            keypress_map.sort(key=lambda x: int(x[0]))
-        except:
-            keypress_map.sort(key=lambda x: x[0])
-        for key, label, ttype in keypress_map:
-            md.append(f"- Press `{key}` → {label} ({ttype})")
-
-    return "\n".join(md)
-
-def extract_final_label(start_id, edges, nodes, visited=None):
+def resolve_destination(graph, nodes, start_id, visited=None):
     if visited is None:
         visited = set()
     if start_id in visited:
-        return nodes.get(start_id, start_id)
+        return None
     visited.add(start_id)
-
-    # look ahead
-    next_edges = [e for e in edges if e[0] == start_id]
-    for src, lbl, dst in next_edges:
-        label = nodes.get(dst, "")
-        match = re.search(r'\(\[(.*?)\]\)', label)
-        if match:
-            return match.group(1).replace('<br>', ' ').strip()
-        return extract_final_label(dst, edges, nodes, visited)
-    return nodes.get(start_id, start_id)
+    label = nodes.get(start_id, '')
+    # Look for ([Final Label])
+    match = re.search(r'\(\[(.*?)\]\)', label)
+    if match:
+        return match.group(1).replace('<br>', ' ').strip()
+    # Otherwise continue deeper
+    for next_id in graph.get(start_id, []):
+        result = resolve_destination(graph, nodes, next_id, visited)
+        if result:
+            return result
+    return None
 
 def categorize_target(label):
     label = label.lower()
@@ -118,6 +86,32 @@ def categorize_target(label):
     else:
         return "❓ Unknown"
 
+def parse_auto_attendant(nodes, edges):
+    md = ["# 🤖 Auto Attendant Call Flow\n"]
+    graph = build_graph(edges)
+
+    incoming = [v for v in nodes.values() if "Incoming Call" in v]
+    if incoming:
+        md.append("## 📞 Entry Points")
+        for i in incoming:
+            md.append(f"- {i}")
+
+    # Build keypress map
+    keypress_map = []
+    for src, label, dst in edges:
+        if label.strip().isdigit():
+            final_label = resolve_destination(graph, nodes, dst)
+            if final_label:
+                keypress_map.append((label.strip(), final_label, categorize_target(final_label)))
+
+    if keypress_map:
+        md.append("\n## 🔘 Main Menu Options")
+        keypress_map.sort(key=lambda x: int(x[0]))
+        for key, label, ttype in keypress_map:
+            md.append(f"- Press `{key}` → {label} ({ttype})")
+
+    return "\n".join(md)
+
 def parse_call_queue(nodes, edges):
     md = []
     name = next((label for label in nodes.values() if "Call Queue" in label), "Call Queue")
@@ -128,7 +122,7 @@ def parse_call_queue(nodes, edges):
             yes_edge = next(((s, l, d) for (s, l, d) in edges if s == k and l.lower() == "yes"), None)
             no_edge = next(((s, l, d) for (s, l, d) in edges if s == k and l.lower() == "no"), None)
             if yes_edge:
-                md.append(f"- **Yes** → {get_target_label(yes_edge[2], nodes)}")
+                md.append(f"- **Yes** → {nodes.get(yes_edge[2], yes_edge[2])}")
             if no_edge:
                 md.append(f"- **No** → Routing continues")
             break
@@ -157,9 +151,6 @@ def parse_call_queue(nodes, edges):
     if any("Agent Available?" in v for v in nodes.values()):
         md.append("- If no agent available → Transfer to voicemail")
     return "\n".join(md)
-
-def get_target_label(target, nodes):
-    return nodes.get(target, target)
 
 def write_markdown(md_text, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
