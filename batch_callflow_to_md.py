@@ -25,10 +25,10 @@ def extract_nodes_edges(mermaid_code, filename=None):
             continue
         matched = False
         if any(op in stripped for op in ['-->', '-.->', '---']):
-            parts = re.split(r'\s*-->\s*|\s*-.->\s*|\s*---\s*', stripped)
-            if len(parts) > 1:
-                for i in range(len(parts)-1):
-                    edges.append(f"{parts[i].strip()} --> {parts[i+1].strip()}")
+            edge_match = re.match(r'(\S+)\s*--\|?(.*?)\|?-->\s*(\S+)', stripped)
+            if edge_match:
+                src, label, dst = edge_match.groups()
+                edges.append((src.strip(), label.strip(), dst.strip()))
                 matched = True
         node_patterns = [
             r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',
@@ -65,20 +65,37 @@ def parse_auto_attendant(nodes, edges):
         for i in incoming:
             md.append(f"- {i}")
 
+    # Detect branching conditions (e.g. |Yes|, |No|)
+    condition_branches = {}
+    for src, label, dst in edges:
+        if label:
+            condition_branches.setdefault(src, []).append((label, dst))
+
+    for src, branches in condition_branches.items():
+        src_label = nodes.get(src, src)
+        if len(branches) >= 2:
+            md.append(f"\n### 🔀 Conditional: {src_label}")
+            for label, dst in branches:
+                dst_label = nodes.get(dst, dst)
+                dst_type = categorize_target(dst_label)
+                md.append(f"- **{label}** → {dst_label} ({dst_type})")
+
+                if "Menu" in dst_label or "Press" in dst_label:
+                    nested_md = parse_menu_branch(dst, nodes, edges)
+                    nested_md = "\n".join(["    " + line if line.strip() else "" for line in nested_md.splitlines()])
+                    md.append(nested_md)
+
+    # Flat menu fallback
     menus = [(k, v) for k, v in nodes.items() if "Menu" in v or "Press" in v]
     if menus:
         md.append("\n## 🔘 Main Menu Options")
         for node_id, label in menus:
-            related_edges = [e for e in edges if e.startswith(f"{node_id} --") or e.startswith(f"{node_id} --->")]
+            related = [(lbl, dst) for src, lbl, dst in edges if src == node_id and lbl]
             keypress_map = []
-            for edge in related_edges:
-                match = re.search(rf'{node_id} --\s*"(.*?)"\s*-->\s*(\w+)', edge)
-                if match:
-                    key, dest = match.groups()
-                    target_label = nodes.get(dest, dest)
-                    target_type = categorize_target(target_label)
-                    keypress_map.append((key, target_label, target_type, dest))
-
+            for key, dest in related:
+                target_label = nodes.get(dest, dest)
+                target_type = categorize_target(target_label)
+                keypress_map.append((key, target_label, target_type, dest))
             if not keypress_map:
                 md.append(f"- {label} (No keypress options found)")
             else:
@@ -86,28 +103,45 @@ def parse_auto_attendant(nodes, edges):
                     keypress_map.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
                 except:
                     keypress_map.sort(key=lambda x: x[0])
-
                 for key, target_label, target_type, dest in keypress_map:
                     md.append(f"- Press `{key}` → {target_label} ({target_type})")
-
-                    # Nested menu support (recursive)
                     if "Menu" in target_label or "Press" in target_label:
-                        nested_md = parse_auto_attendant({k: v for k, v in nodes.items() if k == dest}, edges)
+                        nested_md = parse_menu_branch(dest, nodes, edges)
                         nested_md = "\n".join(["    " + line if line.strip() else "" for line in nested_md.splitlines()])
                         md.append(nested_md)
 
-    vms = [v for v in nodes.values() if "Voicemail" in v]
+    # Voicemail Destinations
+    vms = [(k, v) for k, v in nodes.items() if "Voicemail" in v or "Greeting" in v]
     if vms:
         md.append("\n## 📩 Voicemail Destinations")
-        for v in vms:
-            md.append(f"- {v}")
+        for k, v in vms:
+            md.append(f"- {v} ({k})")
 
+    return "\n".join(md)
+
+def parse_menu_branch(start_id, nodes, edges):
+    md = []
+    related = [(lbl, dst) for src, lbl, dst in edges if src == start_id and lbl]
+    keypress_map = []
+    for key, dest in related:
+        target_label = nodes.get(dest, dest)
+        target_type = categorize_target(target_label)
+        keypress_map.append((key, target_label, target_type, dest))
+    if keypress_map:
+        try:
+            keypress_map.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+        except:
+            keypress_map.sort(key=lambda x: x[0])
+        for key, target_label, target_type, dest in keypress_map:
+            md.append(f"- Press `{key}` → {target_label} ({target_type})")
     return "\n".join(md)
 
 def categorize_target(label):
     label = label.lower()
     if "voicemail" in label:
         return "📩 Voicemail"
+    elif "greeting" in label:
+        return "📩 Greeting"
     elif "directory" in label:
         return "🔂 Directory"
     elif "queue" in label:
@@ -126,10 +160,10 @@ def parse_call_queue(nodes, edges):
     for k, v in nodes.items():
         if "Active Calls?" in v:
             md.append(f"## 🔁 Overflow Condition\n- **Check**: {v}")
-            yes_edge = next((e for e in edges if e.startswith(f"{k} --> |Yes|")), None)
-            no_edge = next((e for e in edges if e.startswith(f"{k} ---> |No|")), None)
+            yes_edge = next(((s, l, d) for (s, l, d) in edges if s == k and l.lower() == "yes"), None)
+            no_edge = next(((s, l, d) for (s, l, d) in edges if s == k and l.lower() == "no"), None)
             if yes_edge:
-                md.append(f"- **Yes** → {get_target_label(yes_edge, nodes)}")
+                md.append(f"- **Yes** → {get_target_label(yes_edge[2], nodes)}")
             if no_edge:
                 md.append(f"- **No** → Routing continues")
             break
@@ -159,12 +193,8 @@ def parse_call_queue(nodes, edges):
         md.append("- If no agent available → Transfer to voicemail")
     return "\n".join(md)
 
-def get_target_label(edge, nodes):
-    match = re.search(r'--.*?-->\s*(\w+)', edge)
-    if match:
-        target = match.group(1)
-        return nodes.get(target, target)
-    return "Unknown"
+def get_target_label(target, nodes):
+    return nodes.get(target, target)
 
 def write_markdown(md_text, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
