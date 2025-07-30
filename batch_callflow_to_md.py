@@ -25,7 +25,7 @@ def extract_nodes_edges(mermaid_code, filename=None):
             continue
         matched = False
         if any(op in stripped for op in ['-->', '-.->', '---']):
-            parts = re.split(r'\s*-->|\s*-.->|\s*---\s*', stripped)
+            parts = re.split(r'\s*-->\s*|\s*-.->\s*|\s*---\s*', stripped)
             if len(parts) > 1:
                 for i in range(len(parts)-1):
                     edges.append(f"{parts[i].strip()} --> {parts[i+1].strip()}")
@@ -69,14 +69,32 @@ def parse_auto_attendant(nodes, edges):
     if menus:
         md.append("\n## 🔘 Main Menu Options")
         for node_id, label in menus:
-            for edge in edges:
-                if edge.startswith(f"{node_id} --"):
-                    match = re.search(rf'{node_id} --\s*\"(.*?)\"\s*-->\s*(\w+)', edge)
-                    if match:
-                        key, dest = match.groups()
-                        target_label = nodes.get(dest, dest)
-                        target_type = categorize_target(target_label)
-                        md.append(f"- Press `{key}` → {target_label} ({target_type})")
+            related_edges = [e for e in edges if e.startswith(f"{node_id} --") or e.startswith(f"{node_id} --->")]
+            keypress_map = []
+            for edge in related_edges:
+                match = re.search(rf'{node_id} --\s*"(.*?)"\s*-->\s*(\w+)', edge)
+                if match:
+                    key, dest = match.groups()
+                    target_label = nodes.get(dest, dest)
+                    target_type = categorize_target(target_label)
+                    keypress_map.append((key, target_label, target_type, dest))
+
+            if not keypress_map:
+                md.append(f"- {label} (No keypress options found)")
+            else:
+                try:
+                    keypress_map.sort(key=lambda x: int(x[0]) if x[0].isdigit() else x[0])
+                except:
+                    keypress_map.sort(key=lambda x: x[0])
+
+                for key, target_label, target_type, dest in keypress_map:
+                    md.append(f"- Press `{key}` → {target_label} ({target_type})")
+
+                    # Nested menu support (recursive)
+                    if "Menu" in target_label or "Press" in target_label:
+                        nested_md = parse_auto_attendant({k: v for k, v in nodes.items() if k == dest}, edges)
+                        nested_md = "\n".join(["    " + line if line.strip() else "" for line in nested_md.splitlines()])
+                        md.append(nested_md)
 
     vms = [v for v in nodes.values() if "Voicemail" in v]
     if vms:
