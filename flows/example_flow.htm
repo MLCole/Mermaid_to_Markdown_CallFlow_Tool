@@ -1,9 +1,6 @@
 <!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
-    <title>Example Call Flow</title>
-</head>
+<head><meta charset="UTF-8"><title>Menu Only Example</title></head>
 <body>
 <pre><code class="language-mermaid">
 flowchart TB
@@ -14,19 +11,13 @@ flowchart TB
   checkHours -- No --> afterHoursMsg[After-Hours Message + Voicemail]
   checkHours -- Yes --> mainMenu{Main Menu - Press 1, 2, or 3}
 
-  mainMenu -- "1" --> salesQueue[Sales Queue]
-  mainMenu -- "2" --> supportQueue[Support Queue]
-  mainMenu -- "3" --> directory[Dial by Name Directory]
+  mainMenu -- "1" --> accounting[Connect to Accounting]
+  mainMenu -- "2" --> hr[Connect to HR]
+  mainMenu -- "3" --> directory[Connect to Company Directory]
 
-  salesQueue --> salesRing{Sales Agents Available?}
-  salesRing -- Yes --> connectSales[Connect to Sales Agent]
-  salesRing -- No --> salesVoicemail[Sales Voicemail]
-
-  supportQueue --> supportRing{Support Agents Available?}
-  supportRing -- Yes --> connectSupport[Connect to Support Agent]
-  supportRing -- No --> supportVoicemail[Support Voicemail]
-
-  directory --> directoryComplete[Connect to Selected Extension]
+  accounting --> vm1[Accounting Voicemail]
+  hr --> vm2[HR Voicemail]
+  directory --> vm3[Dial-by-Name Voicemail]
 </code></pre>
 </body>
 </html>
