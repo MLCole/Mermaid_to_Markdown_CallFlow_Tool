@@ -66,15 +66,12 @@ def parse_auto_attendant(nodes, edges):
         for i in incoming:
             md.append(f"- {i}")
 
-    # Map all menu transitions that contain a keypress number as the label (e.g. '|1|')
     keypress_map = []
     for src, label, dst in edges:
         if label.strip().isdigit():
             option = label.strip()
-            final_target = resolve_final_target(dst, edges, nodes)
-            target_label = nodes.get(final_target, final_target)
-            target_type = categorize_target(target_label)
-            keypress_map.append((option, target_label, target_type))
+            final_label = extract_final_label(dst, edges, nodes)
+            keypress_map.append((option, final_label, categorize_target(final_label)))
 
     if keypress_map:
         md.append("\n## 🔘 Main Menu Options")
@@ -87,16 +84,22 @@ def parse_auto_attendant(nodes, edges):
 
     return "\n".join(md)
 
-def resolve_final_target(start_id, edges, nodes, depth=0, visited=None):
+def extract_final_label(start_id, edges, nodes, visited=None):
     if visited is None:
         visited = set()
-    if start_id in visited or depth > 10:
-        return start_id
+    if start_id in visited:
+        return nodes.get(start_id, start_id)
     visited.add(start_id)
-    next_hops = [dst for src, lbl, dst in edges if src == start_id and not lbl.strip().isdigit()]
-    if not next_hops:
-        return start_id
-    return resolve_final_target(next_hops[0], edges, nodes, depth + 1, visited)
+
+    # look ahead
+    next_edges = [e for e in edges if e[0] == start_id]
+    for src, lbl, dst in next_edges:
+        label = nodes.get(dst, "")
+        match = re.search(r'\(\[(.*?)\]\)', label)
+        if match:
+            return match.group(1).replace('<br>', ' ').strip()
+        return extract_final_label(dst, edges, nodes, visited)
+    return nodes.get(start_id, start_id)
 
 def categorize_target(label):
     label = label.lower()
