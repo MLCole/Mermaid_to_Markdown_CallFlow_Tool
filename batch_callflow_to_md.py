@@ -22,13 +22,11 @@ def extract_nodes_edges(mermaid_code, filename=None):
         stripped = line.strip()
         if not stripped:
             continue
-        # Match edges
         edge_match = re.match(r'(\S+)\s*--\|?(.*?)\|?-->\s*(\S+)', stripped)
         if edge_match:
             src, label, dst = edge_match.groups()
             edges.append((src.strip(), label.strip(), dst.strip()))
             continue
-        # Match nodes
         node_patterns = [
             r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',
             r'([a-zA-Z0-9_\-]+)\(\[(.*?)\]\)',
@@ -51,20 +49,24 @@ def build_graph(edges):
         graph.setdefault(src, []).append(dst)
     return graph
 
-def resolve_destination(graph, nodes, start_id, visited=None):
+def resolve_final_label(nodes, graph, current, visited=None):
     if visited is None:
         visited = set()
-    if start_id in visited:
+    if current in visited:
         return None
-    visited.add(start_id)
-    label = nodes.get(start_id, '')
-    # Look for ([Final Label])
-    match = re.search(r'\(\[(.*?)\]\)', label)
-    if match:
-        return match.group(1).replace('<br>', ' ').strip()
-    # Otherwise continue deeper
-    for next_id in graph.get(start_id, []):
-        result = resolve_destination(graph, nodes, next_id, visited)
+    visited.add(current)
+
+    label = nodes.get(current, '')
+    bracket_match = re.search(r'\(\[(.*?)\]\)', label)
+    if bracket_match:
+        return bracket_match.group(1).replace('<br>', ' ').strip()
+
+    # Try fallback on any meaningful text if no ([...]) exists
+    if label and not re.match(r'^\+?1?\d{10,}$', label) and not re.fullmatch(r'[a-f0-9\-]{36}', label):
+        return label.strip()
+
+    for next_node in graph.get(current, []):
+        result = resolve_final_label(nodes, graph, next_node, visited)
         if result:
             return result
     return None
@@ -96,11 +98,10 @@ def parse_auto_attendant(nodes, edges):
         for i in incoming:
             md.append(f"- {i}")
 
-    # Build keypress map
     keypress_map = []
     for src, label, dst in edges:
         if label.strip().isdigit():
-            final_label = resolve_destination(graph, nodes, dst)
+            final_label = resolve_final_label(nodes, graph, dst)
             if final_label:
                 keypress_map.append((label.strip(), final_label, categorize_target(final_label)))
 
