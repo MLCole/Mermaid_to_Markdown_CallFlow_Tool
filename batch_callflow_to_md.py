@@ -178,6 +178,7 @@ def generate_markdown_from_html(html_file, debug=False):
         else:
             markdown = "# 🚧 Unsupported call flow format."
         output_path = Path(html_file).with_suffix(".md")
+        print("---MARKDOWN PREVIEW---\n", markdown[:300], "\n---END PREVIEW---")
         write_markdown(markdown, output_path)
     except Exception as e:
         print(f"❌ Failed to process {html_file}: {e}")
