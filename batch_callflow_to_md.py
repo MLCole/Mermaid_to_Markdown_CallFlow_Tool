@@ -14,7 +14,7 @@ def extract_mermaid_code(html_file):
         raise Exception(f"No Mermaid code block found in {html_file}")
     return code_block.text
 
-def extract_nodes_edges(mermaid_code):
+def extract_nodes_edges(mermaid_code, filename=None):
     nodes = {}
     edges = []
     unmatched_lines = []
@@ -23,25 +23,20 @@ def extract_nodes_edges(mermaid_code):
         stripped = line.strip()
         if not stripped:
             continue
-
         matched = False
-
-        # Handle chained edges like A --> B --> C
         if any(op in stripped for op in ['-->', '-.->', '---']):
             parts = re.split(r'\s*-->|\s*-.->|\s*---\s*', stripped)
             if len(parts) > 1:
                 for i in range(len(parts)-1):
                     edges.append(f"{parts[i].strip()} --> {parts[i+1].strip()}")
                 matched = True
-
-        # Node patterns
         node_patterns = [
-            r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',           # ((Label))
-            r'([a-zA-Z0-9_\-]+)\(\[(.*?)\]\)',                # ([Label])
-            r'([a-zA-Z0-9_\-]+)\[(.*?)\]',                      # [Label]
-            r'([a-zA-Z0-9_\-]+)\{(.*?)\}',                      # {Label}
-            r'([a-zA-Z0-9_\-]+)>\s*(.*?)\]',                    # > Label]
-            r'(user[a-zA-Z]+[a-zA-Z0-9_\-]*)\((.*?)\)',         # function-style node
+            r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',
+            r'([a-zA-Z0-9_\-]+)\(\[(.*?)\]\)',
+            r'([a-zA-Z0-9_\-]+)\[(.*?)\]',
+            r'([a-zA-Z0-9_\-]+)\{(.*?)\}',
+            r'([a-zA-Z0-9_\-]+)>\s*(.*?)\]',
+            r'(user[a-zA-Z]+[a-zA-Z0-9_\-]*)\((.*?)\)',
         ]
         for pattern in node_patterns:
             match = re.search(pattern, stripped)
@@ -49,23 +44,18 @@ def extract_nodes_edges(mermaid_code):
                 nodes[match.group(1)] = match.group(2).replace('<br>', ' ').strip()
                 matched = True
                 break
-
-        # Raw UUID style nodes
         if not matched and re.fullmatch(r'[0-9a-fA-F\-]{36}', stripped):
             nodes[stripped] = ""
             matched = True
-
         if not matched:
             unmatched_lines.append(stripped)
-
     if unmatched_lines:
-        logging.warning("Unmatched Mermaid lines:")
+        file_label = f"[{filename}]" if filename else ""
+        logging.warning(f"{file_label} Unmatched Mermaid lines:")
         for ul in unmatched_lines:
             logging.warning(f"  >> {ul}")
-
     return nodes, edges
 
-# Rest of the code remains unchanged
 def parse_auto_attendant(nodes, edges):
     md = ["# 🤖 Auto Attendant Call Flow\n"]
 
@@ -166,7 +156,7 @@ def write_markdown(md_text, output_file):
 def generate_markdown_from_html(html_file):
     try:
         mermaid_code = extract_mermaid_code(html_file)
-        nodes, edges = extract_nodes_edges(mermaid_code)
+        nodes, edges = extract_nodes_edges(mermaid_code, html_file)
         if any("Menu" in v or "Press" in v for v in nodes.values()):
             markdown = parse_auto_attendant(nodes, edges)
         elif any("Call Queue" in v or "Agent" in v for v in nodes.values()):
