@@ -1,10 +1,14 @@
 import os
 import re
+import logging
 from bs4 import BeautifulSoup
 from pathlib import Path
 
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+
 def extract_mermaid_code(html_file):
-    soup = BeautifulSoup(open(html_file, 'r', encoding='utf-8'), 'html.parser')
+    with open(html_file, 'r', encoding='utf-8') as f:
+        soup = BeautifulSoup(f, 'html.parser')
     code_block = soup.find('code', class_='language-mermaid')
     if not code_block:
         raise Exception(f"No Mermaid code block found in {html_file}")
@@ -13,54 +17,77 @@ def extract_mermaid_code(html_file):
 def extract_nodes_edges(mermaid_code):
     nodes = {}
     edges = []
+    unmatched_lines = []
     lines = mermaid_code.splitlines()
     for line in lines:
-        if '-->' in line or '-.->' in line or '---' in line:
-            edges.append(line.strip())
-        if '(((' in line or '((' in line or '[[' in line or '[(' in line:
-            match = re.match(r'([a-zA-Z0-9_\-+]+)[ ]*\(\((.*?)\)\)', line)
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        matched = False
+
+        # Handle chained edges like A --> B --> C
+        if any(op in stripped for op in ['-->', '-.->', '---']):
+            parts = re.split(r'\s*-->|\s*-.->|\s*---\s*', stripped)
+            if len(parts) > 1:
+                for i in range(len(parts)-1):
+                    edges.append(f"{parts[i].strip()} --> {parts[i+1].strip()}")
+                matched = True
+
+        # Node patterns
+        node_patterns = [
+            r'([a-zA-Z0-9_\-]+)\s*\(\((.*?)\)\)',           # ((Label))
+            r'([a-zA-Z0-9_\-]+)\(\[(.*?)\]\)',                # ([Label])
+            r'([a-zA-Z0-9_\-]+)\[(.*?)\]',                      # [Label]
+            r'([a-zA-Z0-9_\-]+)\{(.*?)\}',                      # {Label}
+            r'([a-zA-Z0-9_\-]+)>\s*(.*?)\]',                    # > Label]
+            r'(user[a-zA-Z]+[a-zA-Z0-9_\-]*)\((.*?)\)',         # function-style node
+        ]
+        for pattern in node_patterns:
+            match = re.search(pattern, stripped)
             if match:
-                nodes[match[1]] = match[2].replace('<br>', ' ').strip()
-            continue
-        match = re.match(r'([a-zA-Z0-9_\-+]+)\(\[(.*?)\]\)', line)
-        if match:
-            nodes[match[1]] = match[2].replace('<br>', ' ').strip()
-            continue
-        match = re.match(r'([a-zA-Z0-9_\-+]+)\[(.*?)\]', line)
-        if match:
-            nodes[match[1]] = match[2].replace('<br>', ' ').strip()
-            continue
-        match = re.match(r'([a-zA-Z0-9_\-+]+)\{(.*?)\}', line)
-        if match:
-            nodes[match[1]] = match[2].replace('<br>', ' ').strip()
-            continue
+                nodes[match.group(1)] = match.group(2).replace('<br>', ' ').strip()
+                matched = True
+                break
+
+        # Raw UUID style nodes
+        if not matched and re.fullmatch(r'[0-9a-fA-F\-]{36}', stripped):
+            nodes[stripped] = ""
+            matched = True
+
+        if not matched:
+            unmatched_lines.append(stripped)
+
+    if unmatched_lines:
+        logging.warning("Unmatched Mermaid lines:")
+        for ul in unmatched_lines:
+            logging.warning(f"  >> {ul}")
+
     return nodes, edges
 
+# Rest of the code remains unchanged
 def parse_auto_attendant(nodes, edges):
     md = ["# 🤖 Auto Attendant Call Flow\n"]
 
-    # Entry points
     incoming = [v for v in nodes.values() if "Incoming Call" in v]
     if incoming:
         md.append("## 📞 Entry Points")
         for i in incoming:
             md.append(f"- {i}")
 
-    # Menu detection
     menus = [(k, v) for k, v in nodes.items() if "Menu" in v or "Press" in v]
     if menus:
         md.append("\n## 🔘 Main Menu Options")
         for node_id, label in menus:
             for edge in edges:
                 if edge.startswith(f"{node_id} --"):
-                    match = re.match(rf'{node_id} --\s*"(.*?)"\s*-->\s*(\w+)', edge)
+                    match = re.search(rf'{node_id} --\s*\"(.*?)\"\s*-->\s*(\w+)', edge)
                     if match:
                         key, dest = match.groups()
                         target_label = nodes.get(dest, dest)
                         target_type = categorize_target(target_label)
                         md.append(f"- Press `{key}` → {target_label} ({target_type})")
 
-    # Voicemail fallback
     vms = [v for v in nodes.values() if "Voicemail" in v]
     if vms:
         md.append("\n## 📩 Voicemail Destinations")
@@ -79,7 +106,7 @@ def categorize_target(label):
         return "🔁 Call Queue"
     elif "transfer" in label or "external" in label or "forward" in label:
         return "📞 External Transfer"
-    elif re.match(r"[a-z]+\s+[a-z]+", label):  # name-like
+    elif re.match(r"[a-z]+\s+[a-z]+", label):
         return "🧑 Person"
     else:
         return "❓ Unknown"
@@ -98,6 +125,7 @@ def parse_call_queue(nodes, edges):
             if no_edge:
                 md.append(f"- **No** → Routing continues")
             break
+
     routing = [v for v in nodes.values() if "Routing Method" in v]
     if routing:
         md.append(f"\n## 🧽 Routing Method\n- {routing[0]}")
@@ -124,10 +152,9 @@ def parse_call_queue(nodes, edges):
     return "\n".join(md)
 
 def get_target_label(edge, nodes):
-    parts = re.split(r'-->|--->|-.->|--\\|.*?\\|', edge)
-    if len(parts) >= 2:
-        target = parts[-1].strip()
-        target = re.sub(r'\\((.*?)\\)', '', target).strip()
+    match = re.search(r'--.*?-->\s*(\w+)', edge)
+    if match:
+        target = match.group(1)
         return nodes.get(target, target)
     return "Unknown"
 
