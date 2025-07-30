@@ -6,7 +6,6 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
-
 def extract_mermaid_code(html_file):
     with open(html_file, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f, 'html.parser')
@@ -14,7 +13,6 @@ def extract_mermaid_code(html_file):
     if not code_block:
         raise Exception(f"No Mermaid code block found in {html_file}")
     return code_block.text
-
 
 def extract_nodes_edges(mermaid_code):
     nodes = {}
@@ -24,7 +22,7 @@ def extract_nodes_edges(mermaid_code):
         stripped = line.strip()
         if not stripped:
             continue
-        edge_match = re.match(r'(\S+)\s*--\|?(.*?)\|?-->\s*(\S+)', stripped)
+        edge_match = re.match(r'(.+?)\s*--\|?(.*?)\|?-->\s*(.+)', stripped)
         if edge_match:
             src, label, dst = edge_match.groups()
             edges.append((src.strip(), label.strip(), dst.strip()))
@@ -45,46 +43,30 @@ def extract_nodes_edges(mermaid_code):
                 break
     return nodes, edges
 
-
 def build_graph(edges):
     graph = {}
     for src, _, dst in edges:
         graph.setdefault(src, []).append(dst)
     return graph
 
-
-def resolve_final_label(nodes, graph, current, debug=False, trace=None, visited=None):
+def resolve_deep_label(nodes, graph, current, depth=0, visited=None):
     if visited is None:
         visited = set()
-    if current in visited:
+    if current in visited or depth > 10:
         return None
     visited.add(current)
     label = nodes.get(current, '')
-
-    if debug and trace is not None:
-        trace.append(f"→ Looking at '{current}': {label}")
-
-    match = re.search(r'\(\[(.*?)\]\)', label)
-    if match:
-        result = match.group(1).replace('<br>', ' ').strip()
-        if debug and trace is not None:
-            trace.append(f"✓ Found final bracketed label: {result}")
-        return result
-
-    if label and not re.match(r'^\+?1?\d{10,}$', label) and not re.fullmatch(r'[a-f0-9\-]{36}', label):
-        if debug and trace is not None:
-            trace.append(f"✓ Using fallback label: {label}")
+    if match := re.search(r'\(\[(.*?)\]\)', label):
+        return match.group(1).replace('<br>', ' ').strip()
+    elif match := re.search(r'\((.*?)<br>.*?\)', label):
+        return match.group(1).strip()
+    elif label and not re.fullmatch(r'[a-f0-9\-]{36}', current):
         return label.strip()
-
-    for next_node in graph.get(current, []):
-        result = resolve_final_label(nodes, graph, next_node, debug, trace, visited)
+    for neighbor in graph.get(current, []):
+        result = resolve_deep_label(nodes, graph, neighbor, depth + 1, visited)
         if result:
             return result
-
-    if debug and trace is not None:
-        trace.append("⚠ Reached dead end.")
     return None
-
 
 def categorize_target(label):
     label = label.lower()
@@ -98,11 +80,10 @@ def categorize_target(label):
         return "🔁 Call Queue"
     elif "transfer" in label or "external" in label or "forward" in label:
         return "📞 External Transfer"
-    elif re.match(r"[a-z]+\\s+[a-z]+", label):
+    elif re.match(r"[a-z]+\s+[a-z]+", label):
         return "🧑 Person"
     else:
         return "❓ Unknown"
-
 
 def parse_auto_attendant(nodes, edges, debug=False):
     md = ["# 🤖 Auto Attendant Call Flow\n"]
@@ -125,13 +106,13 @@ def parse_auto_attendant(nodes, edges, debug=False):
 
     keypress_map = []
     for src, label, dst in edges:
-        if label.strip().isdigit():
-            trace = [f"🔑 Press `{label}` path:"]
-            final_label = resolve_final_label(nodes, graph, dst, debug=debug, trace=trace)
+        if re.match(r'^\d+$', label.strip()):
+            trace = [f"🔑 Press `{label}` path:"] if debug else None
+            final_label = resolve_deep_label(nodes, graph, dst, visited=set())
             if final_label:
                 keypress_map.append((label.strip(), final_label, categorize_target(final_label)))
             if debug:
-                print("\n".join(trace) + "\n")
+                print("\n".join(trace or []) + f"\n→ Result: {final_label}\n")
 
     if keypress_map:
         md.append("\n## 🔘 Main Menu Options")
@@ -140,7 +121,6 @@ def parse_auto_attendant(nodes, edges, debug=False):
             md.append(f"- Press `{key}` → {label} ({ttype})")
 
     return "\n".join(md)
-
 
 def parse_call_queue(nodes, edges):
     md = []
@@ -171,7 +151,7 @@ def parse_call_queue(nodes, edges):
     if agent_list:
         agent_section += f"\n- {agent_list[0]}"
         for label in nodes.values():
-            if re.match(r"[A-Za-z]+\\s+[A-Za-z]+", label) and "Voicemail" not in label:
+            if re.match(r"[A-Za-z]+\s+[A-Za-z]+", label) and "Voicemail" not in label:
                 agent_section += f"\n  - {label}"
         md.append(agent_section)
     md.append("\n## 🔄 Agent Result Logic")
@@ -182,12 +162,10 @@ def parse_call_queue(nodes, edges):
         md.append("- If no agent available → Transfer to voicemail")
     return "\n".join(md)
 
-
 def write_markdown(md_text, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(md_text)
     print(f"✅ Saved: {output_file}")
-
 
 def generate_markdown_from_html(html_file, debug=False):
     try:
@@ -204,7 +182,6 @@ def generate_markdown_from_html(html_file, debug=False):
     except Exception as e:
         print(f"❌ Failed to process {html_file}: {e}")
 
-
 def batch_process(folder_path, limit=None, debug=False):
     html_files = list(Path(folder_path).glob("*.htm")) + list(Path(folder_path).glob("*.html"))
     if limit:
@@ -212,7 +189,6 @@ def batch_process(folder_path, limit=None, debug=False):
     print(f"🔍 Found {len(html_files)} files to process in: {folder_path}")
     for file in html_files:
         generate_markdown_from_html(file, debug=debug)
-
 
 if __name__ == "__main__":
     import argparse
