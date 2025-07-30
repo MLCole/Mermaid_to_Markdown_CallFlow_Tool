@@ -39,3 +39,9 @@ Users should ensure 'flows' folder/directory should be placed in the same folder
 ```bash 
  python batch_callflow_to_md.py flows --limit 5
 ```
+
+**Debug Mode**
+Run it with debug mode:
+```
+python batch_callflow_to_md.py myfolder/ --debug
+```

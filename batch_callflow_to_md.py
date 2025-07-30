@@ -6,6 +6,7 @@ from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 
+
 def extract_mermaid_code(html_file):
     with open(html_file, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f, 'html.parser')
@@ -14,7 +15,8 @@ def extract_mermaid_code(html_file):
         raise Exception(f"No Mermaid code block found in {html_file}")
     return code_block.text
 
-def extract_nodes_edges(mermaid_code, filename=None):
+
+def extract_nodes_edges(mermaid_code):
     nodes = {}
     edges = []
     lines = mermaid_code.splitlines()
@@ -43,33 +45,46 @@ def extract_nodes_edges(mermaid_code, filename=None):
                 break
     return nodes, edges
 
+
 def build_graph(edges):
     graph = {}
     for src, _, dst in edges:
         graph.setdefault(src, []).append(dst)
     return graph
 
-def resolve_final_label(nodes, graph, current, visited=None):
+
+def resolve_final_label(nodes, graph, current, debug=False, trace=None, visited=None):
     if visited is None:
         visited = set()
     if current in visited:
         return None
     visited.add(current)
-
     label = nodes.get(current, '')
-    bracket_match = re.search(r'\(\[(.*?)\]\)', label)
-    if bracket_match:
-        return bracket_match.group(1).replace('<br>', ' ').strip()
 
-    # Try fallback on any meaningful text if no ([...]) exists
+    if debug and trace is not None:
+        trace.append(f"→ Looking at '{current}': {label}")
+
+    match = re.search(r'\(\[(.*?)\]\)', label)
+    if match:
+        result = match.group(1).replace('<br>', ' ').strip()
+        if debug and trace is not None:
+            trace.append(f"✓ Found final bracketed label: {result}")
+        return result
+
     if label and not re.match(r'^\+?1?\d{10,}$', label) and not re.fullmatch(r'[a-f0-9\-]{36}', label):
+        if debug and trace is not None:
+            trace.append(f"✓ Using fallback label: {label}")
         return label.strip()
 
     for next_node in graph.get(current, []):
-        result = resolve_final_label(nodes, graph, next_node, visited)
+        result = resolve_final_label(nodes, graph, next_node, debug, trace, visited)
         if result:
             return result
+
+    if debug and trace is not None:
+        trace.append("⚠ Reached dead end.")
     return None
+
 
 def categorize_target(label):
     label = label.lower()
@@ -83,14 +98,24 @@ def categorize_target(label):
         return "🔁 Call Queue"
     elif "transfer" in label or "external" in label or "forward" in label:
         return "📞 External Transfer"
-    elif re.match(r"[a-z]+\s+[a-z]+", label):
+    elif re.match(r"[a-z]+\\s+[a-z]+", label):
         return "🧑 Person"
     else:
         return "❓ Unknown"
 
-def parse_auto_attendant(nodes, edges):
+
+def parse_auto_attendant(nodes, edges, debug=False):
     md = ["# 🤖 Auto Attendant Call Flow\n"]
     graph = build_graph(edges)
+
+    if debug:
+        print("🧠 NODE MAP:")
+        for k, v in nodes.items():
+            print(f"  {k}: {v}")
+        print("\n➡ EDGES:")
+        for src, lbl, dst in edges:
+            print(f"  {src} --|{lbl}|--> {dst}")
+        print("\n🔍 WALKING MENU PATHS:")
 
     incoming = [v for v in nodes.values() if "Incoming Call" in v]
     if incoming:
@@ -101,9 +126,12 @@ def parse_auto_attendant(nodes, edges):
     keypress_map = []
     for src, label, dst in edges:
         if label.strip().isdigit():
-            final_label = resolve_final_label(nodes, graph, dst)
+            trace = [f"🔑 Press `{label}` path:"]
+            final_label = resolve_final_label(nodes, graph, dst, debug=debug, trace=trace)
             if final_label:
                 keypress_map.append((label.strip(), final_label, categorize_target(final_label)))
+            if debug:
+                print("\n".join(trace) + "\n")
 
     if keypress_map:
         md.append("\n## 🔘 Main Menu Options")
@@ -112,6 +140,7 @@ def parse_auto_attendant(nodes, edges):
             md.append(f"- Press `{key}` → {label} ({ttype})")
 
     return "\n".join(md)
+
 
 def parse_call_queue(nodes, edges):
     md = []
@@ -142,7 +171,7 @@ def parse_call_queue(nodes, edges):
     if agent_list:
         agent_section += f"\n- {agent_list[0]}"
         for label in nodes.values():
-            if re.match(r"[A-Za-z]+\s+[A-Za-z]+", label) and "Voicemail" not in label:
+            if re.match(r"[A-Za-z]+\\s+[A-Za-z]+", label) and "Voicemail" not in label:
                 agent_section += f"\n  - {label}"
         md.append(agent_section)
     md.append("\n## 🔄 Agent Result Logic")
@@ -153,17 +182,19 @@ def parse_call_queue(nodes, edges):
         md.append("- If no agent available → Transfer to voicemail")
     return "\n".join(md)
 
+
 def write_markdown(md_text, output_file):
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(md_text)
     print(f"✅ Saved: {output_file}")
 
-def generate_markdown_from_html(html_file):
+
+def generate_markdown_from_html(html_file, debug=False):
     try:
         mermaid_code = extract_mermaid_code(html_file)
-        nodes, edges = extract_nodes_edges(mermaid_code, html_file)
+        nodes, edges = extract_nodes_edges(mermaid_code)
         if any("Menu" in v or "Press" in v or re.search(r'{Key Press', v) for v in nodes.values()):
-            markdown = parse_auto_attendant(nodes, edges)
+            markdown = parse_auto_attendant(nodes, edges, debug=debug)
         elif any("Call Queue" in v or "Agent" in v for v in nodes.values()):
             markdown = parse_call_queue(nodes, edges)
         else:
@@ -173,18 +204,21 @@ def generate_markdown_from_html(html_file):
     except Exception as e:
         print(f"❌ Failed to process {html_file}: {e}")
 
-def batch_process(folder_path, limit=None):
+
+def batch_process(folder_path, limit=None, debug=False):
     html_files = list(Path(folder_path).glob("*.htm")) + list(Path(folder_path).glob("*.html"))
     if limit:
         html_files = html_files[:limit]
     print(f"🔍 Found {len(html_files)} files to process in: {folder_path}")
     for file in html_files:
-        generate_markdown_from_html(file)
+        generate_markdown_from_html(file, debug=debug)
+
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Batch extract call flows from Mermaid HTML files into Markdown.")
     parser.add_argument("folder", help="Folder containing .htm/.html files")
     parser.add_argument("--limit", type=int, help="Number of files to process (optional)", default=None)
+    parser.add_argument("--debug", action="store_true", help="Enable debug output")
     args = parser.parse_args()
-    batch_process(args.folder, args.limit)
+    batch_process(args.folder, args.limit, debug=args.debug)
