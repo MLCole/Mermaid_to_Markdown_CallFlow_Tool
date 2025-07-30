@@ -52,21 +52,33 @@ def build_graph(edges):
 def resolve_deep_label(nodes, graph, current, depth=0, visited=None):
     if visited is None:
         visited = set()
-    if current in visited or depth > 10:
+    if current in visited or depth > 12:
         return None
     visited.add(current)
-    label = nodes.get(current, '')
-    if match := re.search(r'\(\[(.*?)\]\)', label):
-        return match.group(1).replace('<br>', ' ').strip()
-    elif match := re.search(r'\((.*?)<br>.*?\)', label):
-        return match.group(1).strip()
-    elif label and not re.fullmatch(r'[a-f0-9\-]{36}', current):
-        return label.strip()
+
+    label = nodes.get(current, "")
+
+    # Check for final meaningful label
+    match_bracket = re.search(r'\(\[(.*?)\]\)', label)
+    if match_bracket:
+        return match_bracket.group(1).replace('<br>', ' ').strip()
+
+    match_paren = re.search(r'\(([^()]*?<br>[^()]*)\)', label)
+    if match_paren:
+        return match_paren.group(1).replace('<br>', ' ').strip()
+
+    match_text = re.sub(r'<br>', ' ', label).strip()
+    if match_text and not re.fullmatch(r'[0-9a-fA-F\-]{36}', current):
+        return match_text
+
+    # Walk deeper
     for neighbor in graph.get(current, []):
         result = resolve_deep_label(nodes, graph, neighbor, depth + 1, visited)
         if result:
             return result
+
     return None
+
 
 def categorize_target(label):
     label = label.lower()
